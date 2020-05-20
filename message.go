@@ -6,6 +6,7 @@ package irc
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 )
 
@@ -278,6 +279,8 @@ func ParseMessage(raw string) (m *Message) {
 		// Skip space at the end of the tags
 		k++
 	}
+
+	fmt.Printf("[IRC] Tags: %+v", m.Tags)
 
 	if raw[k] == prefix {
 		// Prefix ends with a space.
