@@ -257,6 +257,7 @@ type Message struct {
 // Returns nil if the Message is invalid.
 func ParseMessage(raw string) (m *Message) {
 
+	fmt.Printf(">>>> [IRC] Parsing Message...\n")
 	// Ignore empty messages.
 	if raw = strings.TrimFunc(raw, cutsetFunc); len(raw) < 2 {
 		return nil
@@ -280,7 +281,7 @@ func ParseMessage(raw string) (m *Message) {
 		k++
 	}
 
-	fmt.Printf("[IRC] Tags: %+v", m.Tags)
+	fmt.Printf(">>>> [IRC] Tags: %+v\n", m.Tags)
 
 	if raw[k] == prefix {
 		// Prefix ends with a space.
