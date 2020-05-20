@@ -11,12 +11,19 @@ import (
 
 // Various constants used for formatting IRC messages.
 const (
-	prefix     byte = 0x3A // Prefix or last argument
-	prefixUser byte = 0x21 // Username
-	prefixHost byte = 0x40 // Hostname
-	space      byte = 0x20 // Separator
+	tags          byte = 0x40 // Tag start indicator
+	tagsEquals    byte = 0x3D // Keys and values are separated using equal signs
+	tagsSeparator byte = 0x3B // Separator between multiple tags
+	prefix        byte = 0x3A // Prefix or last argument
+	prefixUser    byte = 0x21 // Username
+	prefixHost    byte = 0x40 // Hostname
+	space         byte = 0x20 // Separator
 
 	maxLength = 510 // Maximum length is 512 - 2 for the line endings.
+)
+
+var (
+	tagEscapeReplacer = strings.NewReplacer("\\:", ";", "\\s", " ", "\\r", "\r", "\\n", "\n")
 )
 
 func cutsetFunc(r rune) bool {
@@ -34,6 +41,90 @@ func cutsetFunc(r rune) bool {
 // defined here in the first place. For backwards compatibility only.
 type Sender interface {
 	Send(*Message) error
+}
+
+// Tags represents (optional) tags added to the start of each message
+// See IRCv3.2 Message Tags (http://ircv3.net/specs/core/message-tags-3.2.html)
+//
+// <message>       ::= ['@' <tags> <SPACE>] [':' <prefix> <SPACE> ] <command> <params> <crlf>
+// <tags>          ::= <tag> [';' <tag>]*
+// <tag>           ::= <key> ['=' <escaped value>]
+// <key>           ::= [ <vendor> '/' ] <sequence of letters, digits, hyphens (`-`)>
+// <escaped value> ::= <sequence of any characters except NUL, CR, LF, semicolon (`;`) and SPACE>
+// <vendor>        ::= <host>
+type Tags map[string]string
+
+// ParseTags takes a string and attempts to create a Tags struct
+func ParseTags(raw string) (t Tags) {
+	t = make(Tags)
+
+	tags := strings.Split(raw, string(tagsSeparator))
+
+	for _, val := range tags {
+		replacedVal := tagEscapeReplacer.Replace(val)
+		tagParts := strings.SplitN(replacedVal, string(tagsEquals), 2)
+		// Tag must at least contain a key
+		if len(tagParts) < 1 {
+			continue
+		}
+
+		// Tag only contains key, set empty value
+		if len(tagParts) == 1 {
+			t[tagParts[0]] = ""
+			continue
+		}
+
+		t[tagParts[0]] = tagParts[1]
+	}
+
+	return t
+}
+
+// GetTag checks whether a tag with the given key exists. The boolean return value indicates whether a value was found
+func (t Tags) GetTag(key string) (string, bool) {
+	if t != nil {
+		if val, ok := t[key]; ok {
+			return val, true
+		}
+	}
+
+	return "", false
+}
+
+// writeTo is an utility function to write the tags list to a bytes.Buffer.
+func (t Tags) writeTo(buffer *bytes.Buffer) {
+	buffer.WriteByte(tags)
+
+	i := 0
+	mapLen := len(t)
+	for k, v := range t {
+		buffer.WriteString(k)
+		if v != "" {
+			buffer.WriteByte(tagsEquals)
+			buffer.WriteString(v)
+		}
+		if i != mapLen-1 {
+			buffer.WriteByte(tagsSeparator)
+		}
+
+		i++
+	}
+}
+
+// Bytes returns the []byte representation of this collection of message tags
+func (t Tags) Bytes() []byte {
+	if t == nil {
+		return nil
+	}
+
+	buffer := new(bytes.Buffer)
+	t.writeTo(buffer)
+	return buffer.Bytes()
+}
+
+// String returns the string representation of all set message tags
+func (t Tags) String() (s string) {
+	return string(t.Bytes())
 }
 
 // Prefix represents the prefix (sender) of an IRC message.
@@ -151,6 +242,7 @@ func (p *Prefix) writeTo(buffer *bytes.Buffer) {
 //
 //    <crlf>     ::= CR LF
 type Message struct {
+	Tags
 	*Prefix
 	Command  string
 	Params   []string
@@ -169,21 +261,34 @@ func ParseMessage(raw string) (m *Message) {
 		return nil
 	}
 
-	i, j := 0, 0
+	i, j, k := 0, 0, 0
 
 	m = new(Message)
 
-	if raw[0] == prefix {
+	if raw[k] == tags {
+		// Tags end with a space
+		k = indexByte(raw, space)
 
+		// Tags must not be empty if the indicator is present
+		if k < 2 {
+			return nil
+		}
+
+		m.Tags = ParseTags(raw[1:k])
+		// Skip space at the end of the tags
+		k++
+	}
+
+	if raw[k] == prefix {
 		// Prefix ends with a space.
-		i = indexByte(raw, space)
+		i = k + indexByte(raw[k:], space)
 
 		// Prefix string must not be empty if the indicator is present.
 		if i < 2 {
 			return nil
 		}
 
-		m.Prefix = ParsePrefix(raw[1:i])
+		m.Prefix = ParsePrefix(raw[k+1 : i])
 
 		// Skip space at the end of the prefix
 		i++
@@ -265,8 +370,14 @@ func (m *Message) Len() (length int) {
 // in length. This method forces that limit by discarding any characters
 // exceeding the length limit.
 func (m *Message) Bytes() []byte {
-
 	buffer := new(bytes.Buffer)
+
+	// Message tags
+	if m.Tags != nil {
+		buffer.WriteByte(tags)
+		m.Tags.writeTo(buffer)
+		buffer.WriteByte(space)
+	}
 
 	// Message prefix
 	if m.Prefix != nil {
